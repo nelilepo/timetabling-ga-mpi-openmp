@@ -77,6 +77,12 @@ int n_of_rooms;
 int n_of_features;
 int n_of_students;
 
+int socket_status;
+struct addrinfo host_info;
+struct addrinfo *host_info_list;
+int socketfd;
+struct sockaddr_in serv_addr;
+
 /*
  * Returns the problem size in bytes
  *
@@ -166,7 +172,17 @@ void beginTry() {
     bestEvaluation = INT_MAX;
 }
 
-void endTry(Solution *bestSolution, Value solution) {//, StreamWriterBuilder swb, Value solution) {//
+void sendSocketMsg(char *msg)  {
+    int len;
+    ssize_t bytes_sent;
+    len = strlen(msg);
+    bytes_sent = send(socketfd, msg, len, 0);
+    if (bytes_sent == -1) {
+        (*os) << "send error: " << strerror(errno)<< endl;
+    }
+}
+
+void endTry(Solution *bestSolution, Value solution) {
     StreamWriterBuilder swb;
     swb.settings_["indentation"] = "";
     solution["solution"]["threadID"] = tid;
@@ -184,7 +200,8 @@ void endTry(Solution *bestSolution, Value solution) {//, StreamWriterBuilder swb
             solution["solution"]["rooms"].append(bestSolution->sln[i].second);
 
         string solutionStr = writeString(swb, solution);
-        (*os) << solutionStr << endl;
+        char *msg = (char *)solutionStr.c_str();
+        sendSocketMsg(msg);
     }
     else {
         solution["solution"]["totalTime"] = timer.elapsedTime(Timer::REAL);
@@ -192,7 +209,8 @@ void endTry(Solution *bestSolution, Value solution) {//, StreamWriterBuilder swb
         solution["solution"]["feasible"] = false;
 
         string solutionStr = writeString(swb, solution);
-        (*os) << solutionStr << endl;
+        char *msg = (char *)solutionStr.c_str();
+        sendSocketMsg(msg);
     }
 }
 
@@ -212,7 +230,8 @@ void setCurrentCost(Solution *currentSolution, int tid, StreamWriterBuilder swb,
             double time = getTime();
             logEntry["logEntry"]["time"] = time < 0 ? 0.0 : time;
             string logEntryStr = writeString(swb, logEntry);
-            (*os) << logEntryStr << endl;
+            char *msg = (char *)logEntryStr.c_str();
+            sendSocketMsg(msg);
         }
     } else if(!currentSolution->feasible) {
         int currentEvaluation = (currentSolution->computeHcv() * 1000000 + currentSolution->computeScv()) ;
@@ -222,7 +241,8 @@ void setCurrentCost(Solution *currentSolution, int tid, StreamWriterBuilder swb,
             double time = getTime();
             logEntry["logEntry"]["time"] = time < 0 ? 0.0 : time;
             string logEntryStr = writeString(swb, logEntry);
-            (*os) << logEntryStr << endl;
+            char *msg = (char *)logEntryStr.c_str();
+            sendSocketMsg(msg);
         }
     }
 }
@@ -240,7 +260,8 @@ void setGlobalCost(Solution *currentSolution, StreamWriterBuilder swb, Value run
         string runEntryStr = writeString(swb, runEntry);
 
         if (id == 0) {
-            (*os) << runEntryStr << endl;
+            char *msg = (char *)runEntryStr.c_str();
+            sendSocketMsg(msg);
         }
     }
     else if(!currentSolution->feasible) {
@@ -251,7 +272,8 @@ void setGlobalCost(Solution *currentSolution, StreamWriterBuilder swb, Value run
         string runEntryStr = writeString(swb, runEntry);
 
         if (id == 0) {
-            (*os) << runEntryStr << endl;
+            char *msg = (char *)runEntryStr.c_str();
+            sendSocketMsg(msg);
         }
     }
 }
@@ -367,6 +389,29 @@ void deserializeSolution(int offset, int numSolutions, void *sollutionsBuffer) {
     }
 }
 
+void connectTcpServer() {
+    memset(&host_info, 0, sizeof(host_info));
+
+    //(*os) << "Setting up the structs..."  << endl;
+
+    // Now fill up the linked list of host_info structs
+    socket_status = getaddrinfo("localhost", "9998", &host_info, &host_info_list);
+
+    if (socket_status != 0)  (*os) << "getaddrinfo error" << gai_strerror(socket_status);
+
+    //(*os) << "Creating a socket..."  << endl;
+    socketfd = socket(host_info_list->ai_family, host_info_list->ai_socktype, host_info_list->ai_protocol);
+
+    if (socketfd == -1)  (*os) << "socket create error: " << strerror(errno)<< endl;
+
+    //(*os) << "Connect()ing..."  << endl;
+    socket_status = connect(socketfd, host_info_list->ai_addr, host_info_list->ai_addrlen);
+
+    if (socket_status == -1) {
+        (*os) << "connect error: " << strerror(errno)<< endl;
+    }
+}
+
 int main( int argc, char** argv) {
 
     // Initialize MPI execution
@@ -442,6 +487,9 @@ int main( int argc, char** argv) {
         serializeSolutions(0, popSize, bufferSolution);
         // broadcast the initial population
         MPI_Bcast(bufferSolution, (size_t)popSize*sizeOfSolution, MPI_PACKED, 0, MPI_COMM_WORLD);
+
+        connectTcpServer();
+
     } else {
         // The other processes in the communicator (except the master process)
 
@@ -462,6 +510,8 @@ int main( int argc, char** argv) {
         bufferSolution = malloc((size_t)popSize*sizeOfSolution);
         MPI_Bcast(bufferSolution, (size_t)popSize*sizeOfSolution, MPI_PACKED, 0, MPI_COMM_WORLD);
         deserializeSolution(0, popSize, bufferSolution);
+
+        connectTcpServer();
     }
 
     // Continue execution from all processes (the master and the other processes play a client role)
@@ -605,9 +655,11 @@ int main( int argc, char** argv) {
         runEntry["runEntry"]["threadsNum"] = t;
         runEntry["runEntry"]["totalTime"] = elapsed_time;
         string runEntryStr = writeString(swb, runEntry);
-        (*os) << runEntryStr << endl;
+        char *msg = (char *)runEntryStr.c_str();
+        sendSocketMsg(msg);
     }
     //Finalize MPI execution
     MPI_Finalize();
+    close(socketfd);
     return 0;
 }
